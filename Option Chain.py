@@ -1,112 +1,123 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-from math import log, sqrt, exp, pi
+import math
 
-st.set_page_config(layout="wide", page_title="Option Chain Simulator")
+# ------------------------
+#   BLACK SCHOLES (NO SCIPY)
+# ------------------------
+def N(x):
+    """Cumulative normal distribution using approximation (no scipy)."""
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
-# ----------------------------
-# NORMAL PDF + CDF (no SciPy)
-# ----------------------------
-def norm_pdf(x):
-    return (1.0 / np.sqrt(2 * np.pi)) * np.exp(-0.5 * x * x)
+def black_scholes_call(S, K, t, r, sigma):
+    """Manual Black–Scholes (call)."""
+    if t == 0 or sigma == 0:
+        return max(0, S - K)
 
-def norm_cdf(x):
-    return (1.0 + np.math.erf(x / np.sqrt(2.0))) / 2.0
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))
+    d2 = d1 - sigma * math.sqrt(t)
 
-# ----------------------------
-# Black–Scholes + Greeks
-# ----------------------------
-def bs_price_greeks(S, K, r, q, sigma, t, option_type="call"):
+    return S * N(d1) - K * math.exp(-r * t) * N(d2)
 
-    if t <= 0:
-        # expiry behavior
-        if option_type == "call":
-            return {
-                "price": max(0, S - K),
-                "delta": 1.0 if S > K else 0.0,
-                "vega": 0,
-                "theta": 0
-            }
-        else:
-            return {
-                "price": max(0, K - S),
-                "delta": -1.0 if S < K else 0.0,
-                "vega": 0,
-                "theta": 0
-            }
+# ------------------------
+#   ALGO LOGIC
+# ------------------------
+def algo_quotes(fair_price):
+    """Base algo quoting logic."""
+    buyer_price = 20
+    seller_price = 18
+    return buyer_price, seller_price
 
-    d1 = (log(S/K) + (r - q + 0.5 * sigma*sigma)*t) / (sigma*sqrt(t))
-    d2 = d1 - sigma*sqrt(t)
+def algo_reacts_to_human(fair_price, human_bid):
+    """
+    If human trades above algo → algo increases bid.
+    If 20% above fair value → algo sells to human.
+    """
+    threshold = fair_price * 1.20
 
-    if option_type == "call":
-        price = S*exp(-q*t)*norm_cdf(d1) - K*exp(-r*t)*norm_cdf(d2)
-        delta = exp(-q*t)*norm_cdf(d1)
-    else:
-        price = K*exp(-r*t)*norm_cdf(-d2) - S*exp(-q*t)*norm_cdf(-d1)
-        delta = -exp(-q*t)*norm_cdf(-d1)
+    if human_bid >= threshold:
+        # Algo sells at 20% above fair value
+        algo_sell_price = threshold
+        return "SELL_TO_HUMAN", algo_sell_price
 
-    vega = S * exp(-q*t) * norm_pdf(d1) * sqrt(t)
+    # Otherwise algo moves with human
+    algo_bid = human_bid + 1
+    return "FOLLOW", algo_bid
 
-    # Approx theta
-    theta = - (S * sigma * exp(-q*t) * norm_pdf(d1)) / (2 * sqrt(t))
+def generate_option_chain(S, t, r, sigma):
+    """Creates a simple strikes table."""
+    strikes = [S - 200, S - 100, S, S + 100, S + 200]
 
-    return {
-        "price": float(price),
-        "delta": float(delta),
-        "vega": float(vega/100),
-        "theta": float(theta/365)
-    }
-
-# ----------------------------
-# Build Option Chain
-# ----------------------------
-def build_chain(S, strikes, r, q, sigma, t):
-
-    rows = []
-
+    data = []
     for K in strikes:
-        call = bs_price_greeks(S, K, r, q, sigma, t, "call")
-        put  = bs_price_greeks(S, K, r, q, sigma, t, "put")
+        fair = black_scholes_call(S, K, t, r, sigma)
+        data.append([K, round(fair, 2)])
 
-        rows.append({
-            "Strike": K,
-            "Call FV": round(call["price"],2),
-            "Call Δ": round(call["delta"],3),
-            "Put FV": round(put["price"],2),
-            "Put Δ": round(put["delta"],3)
-        })
+    return pd.DataFrame(data, columns=["Strike", "Fair Price"])
 
-    df = pd.DataFrame(rows)
-    return df
+# ------------------------
+#   STREAMLIT UI
+# ------------------------
+st.title("⚡ Option Chain Simulator with Algo Market Maker")
+st.write("A simple educational simulator for option pricing + algorithmic quoting logic.")
 
-# ----------------------------
-# STREAMLIT UI
-# ----------------------------
-st.title("📈 Option Chain Simulator (SciPy-Free Version)")
+st.sidebar.header("Underlying Inputs")
 
-col1, col2, col3 = st.columns(3)
+S = st.sidebar.number_input("Spot Price (S)", value=20000)
+t = st.sidebar.number_input("Time to Expiry (in years)", value=0.1, step=0.01)
+r = st.sidebar.number_input("Risk-free Rate (r)", value=0.05)
+sigma = st.sidebar.number_input("Implied Volatility (σ)", value=0.20)
 
-S     = col1.number_input("Underlying Price", 100, 100000, 20000)
-iv    = col1.slider("Implied Volatility (σ)", 0.01, 1.0, 0.20)
-r     = col2.number_input("Risk-Free Rate (r)", 0.00, 0.20, 0.06)
-q     = col2.number_input("Dividend Yield (q)", 0.00, 0.20, 0.00)
-days  = col3.number_input("Days to Expiry", 1, 365, 30)
+st.subheader("📘 Black–Scholes Fair Prices")
+df_chain = generate_option_chain(S, t, r, sigma)
+st.dataframe(df_chain)
 
-t = days / 365
+st.divider()
 
-# Define strikes
-center = round(S / 100) * 100
-strikes = [center + i*100 for i in range(-10, 11)]
+# ------------------------
+#   USER SELECTS STRIKE TO SIMULATE NON-LIQUID MARKET
+# ------------------------
+st.header("🧪 Non-Liquid Strike Simulation")
 
-df_chain = build_chain(S, strikes, r, q, iv, t)
+selected_strike = st.selectbox("Pick a Strike", df_chain["Strike"].tolist())
+fair_price = df_chain[df_chain["Strike"] == selected_strike]["Fair Price"].iloc[0]
 
-st.subheader("📊 Option Chain (Calls & Puts)")
-st.dataframe(df_chain, use_container_width=True)
+st.write(f"**Fair Price (Black–Scholes): ₹{fair_price}**")
 
-# Plot call/put FV curves
-fig = px.line(df_chain, x="Strike", y=["Call FV", "Put FV"], title="Fair Value Curve")
-st.plotly_chart(fig, use_container_width=True)
+base_bid, base_ask = algo_quotes(fair_price)
 
+col1, col2 = st.columns(2)
+col1.metric("Algo Buyer Quote", f"₹{base_bid}")
+col2.metric("Algo Seller Quote", f"₹{base_ask}")
 
+st.subheader("Enter Human Trader Bid")
+human_bid = st.number_input("Human Bid Price", value=base_bid, step=1)
 
+if st.button("Run Simulation"):
+    mode, value = algo_reacts_to_human(fair_price, human_bid)
+
+    if mode == "SELL_TO_HUMAN":
+        st.success(f"💥 Human bid exceeded 20% above fair value.")
+        st.success(f"➡ Algo sells to human at **₹{value:.2f}**")
+        st.info("Algo resets back to 20 buy / 100 sell afterwards.")
+
+    else:
+        st.warning("Algo follows the human buyer.")
+        st.write(f"➡ Algo new bid: **₹{value}** (₹1 above human)")
+
+st.divider()
+
+st.header("📊 Explanation of Algo Behavior")
+
+st.write("""
+### Rules Implemented  
+1. **Algo stands at ₹20 (buyer) and ₹18 (seller)** for an illiquid strike.  
+2. If a human places a higher bid → **algo follows human +1**.  
+3. If human reaches **20% above fair value** →  
+   - Algo immediately **sells** at *fair_value × 1.20*.  
+   - Then algo resets to **₹20 bid / ₹100 ask**.  
+4. Human can later sell back to the algo at a loss.
+
+This simulates basic *market making behavior* for illiquid options.
+""")
